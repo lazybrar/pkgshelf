@@ -1,0 +1,19 @@
+[package]
+name = "pkgshelf"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.85"
+description = "Tiny pacman-integrated tracker for the few AUR and local packages you choose"
+license = "GPL-2.0-or-later"
+repository = "https://github.com/lazybrar/pkgshelf"
+readme = "README.md"
+keywords = ["pacman", "aur", "arch-linux", "packaging", "pkgbuild"]
+categories = ["command-line-utilities"]
+
+[dependencies]
+
+[profile.release]
+opt-level = 3
+lto = true
+codegen-units = 1
+strip = true
