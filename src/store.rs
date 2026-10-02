@@ -1,34 +1,60 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 use std::collections::HashMap;
 use std::fs;
+use std::os::unix::fs::PermissionsExt;
 use std::path::PathBuf;
 
 pub const REPO: &str = "pkgshelf";
+pub const GROUP: &str = "pkgshelf";
+pub const DEFAULT_ROOT: &str = "/var/lib/pkgshelf";
+pub const DEFAULT_CACHE: &str = "/var/cache/pkgshelf/aur";
 
 pub struct Dirs {
+    pub root: PathBuf,
     pub packages: PathBuf,
     pub reviewed: PathBuf,
     pub repo: PathBuf,
     pub cache: PathBuf,
 }
 
+fn env_path(var: &str) -> Option<PathBuf> {
+    std::env::var_os(var)
+        .filter(|v| !v.is_empty())
+        .map(PathBuf::from)
+}
+
+/// One shared location for every user of the machine: `/var/lib/pkgshelf` (+ `/var/cache/pkgshelf`).
+/// `$PKGSHELF_ROOT` / `$PKGSHELF_CACHE` override it (a custom root keeps its cache inside it).
 pub fn dirs() -> Result<Dirs, String> {
-    let home = std::env::var("HOME").map_err(|_| "HOME is not set".to_string())?;
-    let xdg = |var: &str, fallback: &str| {
-        std::env::var(var)
-            .ok()
-            .filter(|v| !v.is_empty())
-            .map(PathBuf::from)
-            .unwrap_or_else(|| PathBuf::from(&home).join(fallback))
-    };
+    let custom = env_path("PKGSHELF_ROOT");
+    let root = custom
+        .clone()
+        .unwrap_or_else(|| PathBuf::from(DEFAULT_ROOT));
+    let cache = env_path("PKGSHELF_CACHE").unwrap_or_else(|| match &custom {
+        Some(r) => r.join("cache"),
+        None => PathBuf::from(DEFAULT_CACHE),
+    });
+    Ok(Dirs {
+        packages: root.join("packages"),
+        reviewed: root.join("reviewed"),
+        repo: root.join("repo"),
+        cache,
+        root,
+    })
+}
+
+/// Per-user locations used before 0.2.0, for `pkgshelf migrate`.
+pub fn legacy_dirs() -> Option<Dirs> {
+    let home = std::env::var_os("HOME").map(PathBuf::from)?;
+    let xdg = |var: &str, fallback: &str| env_path(var).unwrap_or_else(|| home.join(fallback));
     let config = xdg("XDG_CONFIG_HOME", ".config").join("pkgshelf");
     let data = xdg("XDG_DATA_HOME", ".local/share").join("pkgshelf");
-    let cache = xdg("XDG_CACHE_HOME", ".cache").join("pkgshelf");
-    Ok(Dirs {
+    Some(Dirs {
         packages: config.join("packages"),
         reviewed: data.join("reviewed"),
         repo: data.join("repo"),
-        cache: cache.join("aur"),
+        cache: xdg("XDG_CACHE_HOME", ".cache").join("pkgshelf/aur"),
+        root: data,
     })
 }
 
@@ -98,10 +124,22 @@ pub fn load(d: &Dirs) -> Result<Vec<Entry>, String> {
 }
 
 fn write(path: &PathBuf, text: &str) -> Result<(), String> {
+    let hint = |e: &std::io::Error| {
+        if e.kind() == std::io::ErrorKind::PermissionDenied {
+            format!(" (are you in the `{GROUP}` group? see `pkgshelf doctor`)")
+        } else {
+            String::new()
+        }
+    };
     if let Some(p) = path.parent() {
-        fs::create_dir_all(p).map_err(|e| format!("cannot create {}: {e}", p.display()))?;
+        fs::create_dir_all(p)
+            .map_err(|e| format!("cannot create {}: {e}{}", p.display(), hint(&e)))?;
     }
-    fs::write(path, text).map_err(|e| format!("cannot write {}: {e}", path.display()))
+    fs::write(path, text)
+        .map_err(|e| format!("cannot write {}: {e}{}", path.display(), hint(&e)))?;
+    // shared between users: keep it group-writable regardless of the umask
+    let _ = fs::set_permissions(path, fs::Permissions::from_mode(0o664));
+    Ok(())
 }
 
 pub fn save(d: &Dirs, es: &[Entry]) -> Result<(), String> {

@@ -4,6 +4,7 @@
 
 mod aur;
 mod pkg;
+mod shared;
 mod store;
 mod util;
 
@@ -30,9 +31,11 @@ usage:
   pkgshelf update [name...] [--yes] [--force]
                                       build outdated packages into the local repo
   pkgshelf hold <name> | unhold <name>
-  pkgshelf doctor                     check tools, pacman.conf and untracked foreign packages
+  pkgshelf doctor                     check tools, shared dirs, pacman.conf, untracked foreign packages
+  pkgshelf migrate                    copy per-user data from before 0.2.0 into the shared location
 
 pkgshelf only builds into a local repo; install with `sudo pacman -Syu`.
+State is shared by all users in /var/lib/pkgshelf (group `pkgshelf`); override with $PKGSHELF_ROOT.
 AUR PKGBUILDs are shown for review before they are built.";
 
 // ---------- cli ----------
@@ -64,6 +67,7 @@ enum Cmd {
         on: bool,
     },
     Doctor,
+    Migrate,
     Help,
     Version,
 }
@@ -130,6 +134,7 @@ fn parse_args(args: &[String]) -> Result<Cmd, String> {
             })
         }),
         "doctor" => allowed(&[]).map(|_| Cmd::Doctor),
+        "migrate" => allowed(&[]).map(|_| Cmd::Migrate),
         other => Err(format!("unknown command '{other}'")),
     }
 }
@@ -379,7 +384,7 @@ fn rm(c: &mut Ctx, name: &str, purge: bool) -> Result<(), String> {
     if purge {
         let db = c.d.repo.join(format!("{REPO}.db.tar.zst"));
         if db.exists() && !names.is_empty() {
-            let _ = util::run(Command::new("repo-remove").arg(&db).args(&names));
+            let _ = util::run(util::grp("repo-remove").arg(&db).args(&names));
         }
         for f in fs::read_dir(&c.d.repo).into_iter().flatten().flatten() {
             if f.file_name()
@@ -390,6 +395,7 @@ fn rm(c: &mut Ctx, name: &str, purge: bool) -> Result<(), String> {
                 let _ = fs::remove_file(f.path());
             }
         }
+        shared::share_repo(&c.d.repo);
         println!(
             "purged {name} from the repo; it stays installed until you run `sudo pacman -R {name}`"
         );
@@ -472,7 +478,8 @@ fn check(c: &Ctx, quiet: bool) -> Result<bool, String> {
 }
 
 fn git(dir: &Path) -> Command {
-    let mut g = Command::new("git");
+    let mut g = util::grp("git");
+    g.args(["-c", "safe.directory=*"]);
     g.arg("-C").arg(dir).arg("--no-pager");
     g
 }
@@ -485,7 +492,7 @@ fn sync_clone(c: &Ctx, base: &str) -> Result<PathBuf, String> {
         fs::create_dir_all(&c.d.cache)
             .map_err(|e| format!("cannot create {}: {e}", c.d.cache.display()))?;
         util::run(
-            Command::new("git")
+            util::grp("git")
                 .args([
                     "clone",
                     "--quiet",
@@ -580,13 +587,13 @@ fn build_into_repo(c: &Ctx, dir: &Path, names: &[String]) -> Result<(), String> 
     fs::create_dir_all(&c.d.repo)
         .map_err(|e| format!("cannot create {}: {e}", c.d.repo.display()))?;
     util::run(
-        Command::new("makepkg")
+        util::grp("makepkg")
             .arg("-sfc")
             .current_dir(dir)
             .env("PKGDEST", &c.d.repo),
     )?;
     let list = util::out(
-        Command::new("makepkg")
+        util::grp("makepkg")
             .arg("--packagelist")
             .current_dir(dir)
             .env("PKGDEST", &c.d.repo),
@@ -606,11 +613,13 @@ fn build_into_repo(c: &Ctx, dir: &Path, names: &[String]) -> Result<(), String> 
         return Err("makepkg produced no matching package files".into());
     }
     util::run(
-        Command::new("repo-add")
+        util::grp("repo-add")
             .arg("-R")
             .arg(c.d.repo.join(format!("{REPO}.db.tar.zst")))
             .args(files),
-    )
+    )?;
+    shared::share_repo(&c.d.repo);
+    Ok(())
 }
 
 fn build_aur(c: &Ctx, r: &Row, yes: bool) -> Result<(), String> {
@@ -741,18 +750,15 @@ fn doctor(c: &Ctx) -> Result<bool, String> {
         ok &= have;
         println!("{} {t}", if have { "ok     " } else { "MISSING" });
     }
-    let conf = fs::read_to_string("/etc/pacman.conf").unwrap_or_default();
-    if conf.lines().any(|l| l.trim() == format!("[{REPO}]")) {
-        println!("ok      /etc/pacman.conf has [{REPO}]");
-    } else {
-        ok = false;
-        println!(
-            "MISSING [{REPO}] in /etc/pacman.conf; add this at the end (then run `sudo pacman -Sy`):\n"
-        );
-        println!(
-            "[{REPO}]\nSigLevel = Optional TrustAll\nServer = file://{}\n",
-            c.d.repo.display()
-        );
+    ok &= shared::check_dirs(&c.d);
+    ok &= shared::check_pacman_conf(&c.d);
+    if let Some(old) = store::legacy_dirs() {
+        if old.packages.exists() && old.root != c.d.root {
+            println!(
+                "NOTE    per-user data found in {}: run `pkgshelf migrate`",
+                old.root.display()
+            );
+        }
     }
     println!(
         "{} repo db {}",
@@ -838,6 +844,11 @@ fn run(cmd: Cmd) -> Result<ExitCode, String> {
         }
         Cmd::Hold { name, on } => hold(&mut Ctx::new()?, &name, on)?,
         Cmd::Doctor => return done(doctor(&Ctx::new()?)?),
+        Cmd::Migrate => {
+            for line in shared::migrate(&store::dirs()?)? {
+                println!("{line}");
+            }
+        }
     }
     Ok(ExitCode::SUCCESS)
 }

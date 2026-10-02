@@ -4,7 +4,19 @@ use std::io::{self, BufRead, Write};
 use std::process::{Command, Stdio};
 
 fn prog(c: &Command) -> String {
-    c.get_program().to_string_lossy().into_owned()
+    let p = c.get_program().to_string_lossy().into_owned();
+    let args: Vec<_> = c.get_args().collect();
+    if p == "sh" && args.len() > 2 && args[0] == "-c" {
+        return args[2].to_string_lossy().into_owned();
+    }
+    p
+}
+
+/// A command run with umask 002 (via sh), so files it creates in the shared dirs stay group-writable.
+pub fn grp(program: &str) -> Command {
+    let mut c = Command::new("sh");
+    c.args(["-c", "umask 002; exec \"$0\" \"$@\"", program]);
+    c
 }
 
 /// Run a command and capture stdout; stderr goes to the terminal.
