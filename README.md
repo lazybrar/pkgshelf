@@ -17,7 +17,7 @@ Add the printed block to `/etc/pacman.conf` once (it points at `~/.local/share/p
     pkgshelf add aur brave-bin claude-code     # track AUR packages
     pkgshelf add local ~/work/projects/small/clip   # track a local project (PKGBUILD or pkg/PKGBUILD)
     pkgshelf check                             # installed / built / latest, exit 100 if updates are pending
-    pkgshelf update                            # build outdated ones into the repo (AUR: you review the PKGBUILD first)
+    pkgshelf update                            # build outdated ones into the repo (AUR: short summary, then confirm)
     sudo pacman -Syu                           # pacman installs and updates everything, as usual
 
 Also: `list`, `diff <name>`, `hold`/`unhold <name>`, `rm <name> [--purge]`, `update <name> --force`, `doctor`
@@ -27,8 +27,8 @@ Also: `list`, `diff <name>`, `hold`/`unhold <name>`, `rm <name> [--purge]`, `upd
 
 - Tracked entries live in `~/.config/pkgshelf/packages` (`aur NAME [hold]` / `local PATH [hold]`), plain text you can edit.
 - Built packages go to `~/.local/share/pkgshelf/repo` via `makepkg` + `repo-add`; versions are compared with `vercmp`.
-- AUR: the git repo is cloned to `~/.cache/pkgshelf/aur`. The first time you see the full PKGBUILD; afterwards only the diff
-  since the commit you approved. Nothing is built without your `y` (`--yes` skips the prompt; use with care).
+- AUR: the git repo is cloned to `~/.cache/pkgshelf/aur`. `update` prints only a short summary (changed files, diffstat) and asks before building;
+  `pkgshelf diff <name>` shows the PKGBUILD (full the first time, then only changes since your approval). Nothing is built without your `y` (`--yes` skips the prompt; use with care).
 - Local: the PKGBUILD is built as is; bump the version (e.g. `cratepkg init --force` after a Cargo.toml version bump)
   so pacman sees an upgrade. `update --force <name>` rebuilds the same version.
 - Once a package is in the `[pkgshelf]` repo, `pacman -Qm` no longer lists it as foreign.

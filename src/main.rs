@@ -537,6 +537,45 @@ fn show_review(dir: &Path, rev: Option<&str>) -> Result<(), String> {
     Ok(())
 }
 
+/// Short summary for the build prompt; `pkgshelf diff <name>` shows the actual contents.
+fn review_summary(dir: &Path, rev: Option<&str>, name: &str) -> Result<(), String> {
+    let known = rev.filter(|r| {
+        git(dir)
+            .args(["cat-file", "-e", r])
+            .stderr(Stdio::null())
+            .status()
+            .is_ok_and(|s| s.success())
+    });
+    if let Some(r) = known {
+        let stat = util::out(git(dir).args([
+            "diff",
+            "--stat",
+            r,
+            "HEAD",
+            "--",
+            ".",
+            ":(exclude).SRCINFO",
+        ]))?;
+        if stat.trim().is_empty() {
+            println!("{name}: no PKGBUILD or source-file changes since your last review");
+        } else {
+            print!("{name}: changed since your last review\n{stat}");
+        }
+    } else {
+        println!("{name}: not reviewed before; files:");
+        for l in util::out(git(dir).args(["ls-tree", "-r", "-l", "HEAD"]))?.lines() {
+            if let Some((meta, path)) = l.split_once('\t').filter(|(_, p)| *p != ".SRCINFO") {
+                println!(
+                    "  {path} ({} bytes)",
+                    meta.split_whitespace().last().unwrap_or("?")
+                );
+            }
+        }
+    }
+    println!("read it with: pkgshelf diff {name}");
+    Ok(())
+}
+
 fn build_into_repo(c: &Ctx, dir: &Path, names: &[String]) -> Result<(), String> {
     fs::create_dir_all(&c.d.repo)
         .map_err(|e| format!("cannot create {}: {e}", c.d.repo.display()))?;
@@ -581,8 +620,8 @@ fn build_aur(c: &Ctx, r: &Row, yes: bool) -> Result<(), String> {
         .to_string();
     let reviewed = store::load_reviewed(&c.d);
     if reviewed.get(&r.name) != Some(&head) {
-        show_review(&dir, reviewed.get(&r.name).map(String::as_str))?;
-        if !util::confirm(&format!("Build {} from this PKGBUILD?", r.name), yes) {
+        review_summary(&dir, reviewed.get(&r.name).map(String::as_str), &r.name)?;
+        if !util::confirm(&format!("Build {}?", r.name), yes) {
             return Err("declined".into());
         }
     }
