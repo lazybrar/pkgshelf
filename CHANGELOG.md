@@ -1,5 +1,8 @@
 # Changelog
 
+## 0.3.0
+- setup command prints the root script for cargo-install users; doctor points to it; crates.io metadata and README
+
 ## 0.2.0
 - shared global data in /var/lib/pkgshelf with a pkgshelf group; doctor checks permissions; migrate command
 

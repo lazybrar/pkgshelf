@@ -1,13 +1,23 @@
 # pkgshelf
 
 A tiny pacman-integrated tracker for the few packages you choose: some from the AUR, some of your own (e.g. built with
-[cratepkg](https://github.com/lazybrar/cratepkg)). Not a package manager and not an AUR helper that searches or resolves
+[cratepkg](https://crates.io/crates/cratepkg)). Not a package manager and not an AUR helper that searches or resolves
 the whole AUR: it builds your picks into one local pacman repo, and plain `pacman -Syu` installs and updates them.
 Zero dependencies, written in Rust. It never installs anything itself.
 
+Arch Linux (and derivatives) only: it needs `pacman`, `makepkg`, `repo-add`, `git` and `curl`.
+
+## Install
+
+    cargo install pkgshelf
+
+or as a pacman package (also installs the group and directory definitions): `git clone https://github.com/lazybrar/pkgshelf && cd pkgshelf/pkg && makepkg -si`.
+
 ## Setup (one shared setup for every user of the machine)
 
-    cd pkg && makepkg -si        # creates the `pkgshelf` group and /var/lib/pkgshelf, /var/cache/pkgshelf
+With the pacman package the group and directories exist already. After `cargo install`, create them once:
+
+    pkgshelf setup | sudo sh     # prints a short root script (read it first): group `pkgshelf`, /var/lib/pkgshelf, /var/cache/pkgshelf
     sudo usermod -aG pkgshelf <you>      # then log in again
     pkgshelf doctor              # checks tools, directories and /etc/pacman.conf; prints what is missing
 
@@ -29,7 +39,7 @@ as the user who owns that data, update the `Server` path in `/etc/pacman.conf`, 
     sudo pacman -Syu                           # pacman installs and updates everything, as usual
 
 Also: `list`, `diff <name>`, `hold`/`unhold <name>`, `rm <name> [--purge]`, `update <name> --force`, `doctor`
-(lists installed foreign packages you don't track yet).
+(lists installed foreign packages you don't track yet), `setup`, `migrate`.
 
 ## How it works
 

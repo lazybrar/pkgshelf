@@ -33,6 +33,8 @@ usage:
   pkgshelf hold <name> | unhold <name>
   pkgshelf doctor                     check tools, shared dirs, pacman.conf, untracked foreign packages
   pkgshelf migrate                    copy per-user data from before 0.2.0 into the shared location
+  pkgshelf setup                      print the root commands that create the group and shared dirs (for `cargo install`
+                                      users; run: pkgshelf setup | sudo sh). Never runs them itself
 
 pkgshelf only builds into a local repo; install with `sudo pacman -Syu`.
 State is shared by all users in /var/lib/pkgshelf (group `pkgshelf`); override with $PKGSHELF_ROOT.
@@ -68,6 +70,7 @@ enum Cmd {
     },
     Doctor,
     Migrate,
+    Setup,
     Help,
     Version,
 }
@@ -135,6 +138,7 @@ fn parse_args(args: &[String]) -> Result<Cmd, String> {
         }),
         "doctor" => allowed(&[]).map(|_| Cmd::Doctor),
         "migrate" => allowed(&[]).map(|_| Cmd::Migrate),
+        "setup" => allowed(&[]).map(|_| Cmd::Setup),
         other => Err(format!("unknown command '{other}'")),
     }
 }
@@ -844,6 +848,7 @@ fn run(cmd: Cmd) -> Result<ExitCode, String> {
         }
         Cmd::Hold { name, on } => hold(&mut Ctx::new()?, &name, on)?,
         Cmd::Doctor => return done(doctor(&Ctx::new()?)?),
+        Cmd::Setup => print!("{}", shared::setup_script(&store::dirs()?)),
         Cmd::Migrate => {
             for line in shared::migrate(&store::dirs()?)? {
                 println!("{line}");

@@ -26,6 +26,7 @@ pub fn check_dirs(d: &Dirs) -> bool {
         let Ok(m) = fs::metadata(p) else {
             ok = false;
             println!("MISSING {what} dir {}", p.display());
+            println!("        (create them: pkgshelf setup | sudo sh)");
             continue;
         };
         let mode = m.permissions().mode();
@@ -212,5 +213,56 @@ mod tests {
         );
         assert_eq!(parse_server("[pkgshelf]\nSigLevel = Never\n"), Some(None));
         assert_eq!(parse_server("[core]\nServer = z\n"), None);
+    }
+}
+
+fn shq(p: &Path) -> String {
+    format!("'{}'", p.to_string_lossy().replace('\'', "'\\''"))
+}
+
+/// A POSIX shell script (for root) that creates the group and shared directories, like the
+/// sysusers.d/tmpfiles.d files shipped in the pacman package. Printed, never executed by pkgshelf.
+pub fn setup_script(d: &Dirs) -> String {
+    let mut dirs = vec![d.root.clone(), d.repo.clone()];
+    if let Some(p) = d.cache.parent() {
+        dirs.push(p.to_path_buf());
+    }
+    dirs.push(d.cache.clone());
+    let mut seen = Vec::new();
+    dirs.retain(|p| {
+        !seen.contains(p) && {
+            seen.push(p.clone());
+            true
+        }
+    });
+    let list: Vec<String> = dirs.iter().map(|p| shq(p)).collect();
+    format!(
+        "#!/bin/sh\n# pkgshelf setup: run as root (pkgshelf setup | sudo sh)\nset -e\n\
+         getent group {GROUP} >/dev/null || groupadd --system {GROUP}\n\
+         install -d -m 2775 -o root -g {GROUP} {}\n\
+         # then: usermod -aG {GROUP} <you>   (log in again), and add to /etc/pacman.conf:\n\
+         #   [{REPO}]\n#   SigLevel = Optional TrustAll\n#   Server = file://{}\n",
+        list.join(" "),
+        d.repo.display()
+    )
+}
+
+#[cfg(test)]
+mod setup_tests {
+    use super::*;
+
+    #[test]
+    fn setup_script_creates_group_and_dirs() {
+        let d = Dirs {
+            root: "/var/lib/pkgshelf".into(),
+            packages: "/var/lib/pkgshelf/packages".into(),
+            reviewed: "/var/lib/pkgshelf/reviewed".into(),
+            repo: "/var/lib/pkgshelf/repo".into(),
+            cache: "/var/cache/pkgshelf/aur".into(),
+        };
+        let s = setup_script(&d);
+        assert!(s.contains("groupadd --system pkgshelf"));
+        assert!(s.contains("install -d -m 2775 -o root -g pkgshelf '/var/lib/pkgshelf' '/var/lib/pkgshelf/repo' '/var/cache/pkgshelf' '/var/cache/pkgshelf/aur'"));
+        assert!(s.contains("Server = file:///var/lib/pkgshelf/repo"));
     }
 }

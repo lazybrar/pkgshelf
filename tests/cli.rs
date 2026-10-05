@@ -131,3 +131,14 @@ fn shared_files_are_group_writable() {
         .mode();
     assert_eq!(mode & 0o777, 0o664);
 }
+
+#[test]
+fn setup_prints_a_script_and_changes_nothing() {
+    let h = home("setup");
+    let o = run(&h, &["setup"]);
+    assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
+    let s = stdout(&o);
+    assert!(s.contains("groupadd --system pkgshelf") && s.contains("install -d -m 2775"));
+    assert!(!h.join("shared").exists());
+    assert!(!run(&h, &["setup", "--now"]).status.success());
+}
