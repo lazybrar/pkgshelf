@@ -2,7 +2,7 @@
 
 ## 0.4.0
 - not in the `pkgshelf` group? `add/rm/update/hold/rollback` re-run themselves through `sudo -g pkgshelf`; clear permission errors; `update` stops at the first permission failure
-- after building, `update` offers `sudo pacman -Syu --needed <built packages>`
+- after building, `update` offers `sudo pacman -U --needed <built files>` (only those packages, no sync or system upgrade)
 - missing AUR dependencies are tracked, built and installed first (asks); missing PGP keys from `validpgpkeys` are offered for import
 - `update --devel` rebuilds -git/-svn/-hg/-bzr packages; `check` flags orphaned AUR packages
 - `rollback <name>` restores the previous built version (the repo keeps the newest two) and holds the package

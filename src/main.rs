@@ -840,21 +840,22 @@ fn update(c: &Ctx, names: &[String], yes: bool, force: bool, devel: bool) -> Res
         }
     );
     if built > 0 {
-        let mut cmd = vec!["-Syu".to_string(), "--needed".into()];
-        cmd.extend(installable);
+        // -U on the built files installs just these packages: no database sync, no system upgrade
+        let files: Vec<String> = installable
+            .iter()
+            .filter_map(|n| pkg::versions_of(&c.d.repo, n).into_iter().next())
+            .map(|(_, f)| f.display().to_string())
+            .collect();
+        let mut cmd = vec!["-U".to_string(), "--needed".into()];
+        cmd.extend(files);
         let line = format!("sudo pacman {}", cmd.join(" "));
-        if !shared::repo_configured() {
-            println!(
-                "the [{REPO}] repo is not in /etc/pacman.conf yet, so pacman cannot see these packages"
-            );
-            if util::confirm("add it now with sudo?", false) {
-                shared::add_repo_to_conf(&c.d)?;
-            } else {
-                println!("later: pkgshelf setup | sudo sh   then: {line}");
-                return Ok(failed.is_empty());
-            }
-        }
-        if util::confirm(&format!("install now with `{line}`?"), false) {
+        if util::confirm(
+            &format!(
+                "install {} now with sudo pacman -U?",
+                installable.join(", ")
+            ),
+            false,
+        ) {
             util::run(Command::new("sudo").arg("pacman").args(&cmd))?;
         } else {
             println!("install later with: {line}");
