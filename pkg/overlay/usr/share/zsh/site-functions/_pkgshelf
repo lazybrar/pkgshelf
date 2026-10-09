@@ -1,0 +1,15 @@
+#compdef pkgshelf
+local -a cmds tracked
+cmds=(add rm list check diff update hold unhold rollback doctor migrate setup help)
+tracked=(${(f)"$(pkgshelf list 2>/dev/null | awk '{n=$2; sub(".*/","",n); print n}')"})
+if (( CURRENT == 2 )); then
+  _describe command cmds
+else
+  case $words[2] in
+    add) (( CURRENT == 3 )) && _values kind aur local ;;
+    update) _arguments '--yes' '--force' '--devel' '*:package:($tracked)' ;;
+    rm) _arguments '--purge' '*:package:($tracked)' ;;
+    check) _arguments '--quiet' ;;
+    diff|hold|unhold|rollback) _values package $tracked ;;
+  esac
+fi

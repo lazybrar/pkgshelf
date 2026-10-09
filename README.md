@@ -39,7 +39,7 @@ as the user who owns that data, update the `Server` path in `/etc/pacman.conf`, 
     sudo pacman -Syu                           # pacman installs and updates everything, as usual
 
 Also: `list`, `diff <name>`, `hold`/`unhold <name>`, `rm <name> [--purge]`, `update <name> --force`, `doctor`
-(lists installed foreign packages you don't track yet), `setup`, `migrate`.
+(lists installed foreign packages you don't track yet), `setup`, `migrate`, `rollback <name>` (previous built version, held), `update --devel` (rebuild VCS packages). Missing AUR dependencies and PGP keys are offered automatically. The package ships a daily check timer (`systemctl --user enable --now pkgshelf-check.timer`, notifies when updates are pending) and fish/bash/zsh completions.
 
 ## How it works
 

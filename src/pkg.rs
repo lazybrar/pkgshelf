@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 use crate::util;
 use std::cmp::Ordering;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -41,6 +41,66 @@ pub fn srcinfo(dir: &Path) -> Result<Src, String> {
     )?;
     parse_srcinfo(&s)
         .ok_or_else(|| format!("cannot read version/name from {}/PKGBUILD", dir.display()))
+}
+
+/// Values of `.SRCINFO` keys (e.g. depends, makedepends, validpgpkeys) for a PKGBUILD dir.
+pub fn srcinfo_values(dir: &Path, keys: &[&str]) -> Result<Vec<String>, String> {
+    let s = util::out(
+        Command::new("makepkg")
+            .arg("--printsrcinfo")
+            .current_dir(dir),
+    )?;
+    Ok(values_of(&s, keys))
+}
+
+fn values_of(srcinfo: &str, keys: &[&str]) -> Vec<String> {
+    let mut v: Vec<String> = srcinfo
+        .lines()
+        .filter_map(|l| l.trim().split_once(" = "))
+        .filter(|(k, _)| keys.contains(k))
+        .map(|(_, v)| v.trim().to_string())
+        .collect();
+    v.sort();
+    v.dedup();
+    v
+}
+
+/// Package name part of a dependency string like `foo>=1.2` or `foo: why`.
+pub fn dep_name(d: &str) -> &str {
+    d.split(['<', '>', '=', ':'])
+        .next()
+        .unwrap_or(d)
+        .trim()
+}
+
+/// Built files of `name` in the repo, newest version first.
+pub fn versions_of(repo: &Path, name: &str) -> Vec<(String, PathBuf)> {
+    let mut v: Vec<(String, PathBuf)> = fs::read_dir(repo)
+        .into_iter()
+        .flatten()
+        .flatten()
+        .filter_map(|e| {
+            let (n, ver) = e.file_name().to_str().and_then(file_parts)?;
+            (n == name).then(|| (ver, e.path()))
+        })
+        .collect();
+    v.sort_by(|a, b| util::vercmp(&b.0, &a.0));
+    v
+}
+
+/// Delete all but the `keep` newest built versions of every package (kept for `rollback`).
+pub fn prune_repo(repo: &Path, keep: usize) {
+    let names: HashSet<String> = fs::read_dir(repo)
+        .into_iter()
+        .flatten()
+        .flatten()
+        .filter_map(|e| Some(file_parts(e.file_name().to_str()?)?.0))
+        .collect();
+    for n in names {
+        for (_, p) in versions_of(repo, &n).into_iter().skip(keep) {
+            let _ = fs::remove_file(p);
+        }
+    }
 }
 
 /// Directory holding the PKGBUILD for a local project: the dir itself or its `pkg/` subdir.
@@ -110,6 +170,15 @@ mod tests {
         assert_eq!(r.version, "1:1.96.60-1");
         assert_eq!(r.names.len(), 2);
         assert_eq!(parse_srcinfo("pkgname = x\n"), None);
+    }
+
+    #[test]
+    fn srcinfo_keys() {
+        let s = "pkgbase = a\n\tdepends = x>=1\n\tmakedepends = y\n\tdepends = x>=1\n\tvalidpgpkeys = ABCD\n";
+        assert_eq!(values_of(s, &["depends", "makedepends"]), vec!["x>=1", "y"]);
+        assert_eq!(values_of(s, &["validpgpkeys"]), vec!["ABCD"]);
+        assert_eq!(dep_name("foo>=1.2"), "foo");
+        assert_eq!(dep_name("foo: for bar"), "foo");
     }
 
     #[test]

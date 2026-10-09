@@ -243,10 +243,13 @@ pub fn setup_script(d: &Dirs) -> String {
          if [ -n \"${{SUDO_USER:-}}\" ] && [ \"$SUDO_USER\" != root ]; then\n\
          \x20 usermod -aG {GROUP} \"$SUDO_USER\"; echo \"added $SUDO_USER to {GROUP}: log in again (or: sg {GROUP} -c 'pkgshelf ...')\"\n\
          fi\n\
-         # other users: usermod -aG {GROUP} <user>. Add to /etc/pacman.conf:\n\
-         #   [{REPO}]\n#   SigLevel = Optional TrustAll\n#   Server = file://{}\n",
+         # other users: usermod -aG {GROUP} <user>\n\
+         grep -q '^\\[{REPO}\\]' /etc/pacman.conf || {{\n\
+         \x20 printf '\\n[{REPO}]\\nSigLevel = Optional TrustAll\\nServer = file://%s\\n' {} >> /etc/pacman.conf\n\
+         \x20 echo 'added the [{REPO}] repo to /etc/pacman.conf'\n\
+         }}\n",
         list.join(" "),
-        d.repo.display()
+        shq(&d.repo)
     )
 }
 
@@ -266,6 +269,8 @@ mod setup_tests {
         let s = setup_script(&d);
         assert!(s.contains("groupadd --system pkgshelf"));
         assert!(s.contains("install -d -m 2775 -o root -g pkgshelf '/var/lib/pkgshelf' '/var/lib/pkgshelf/repo' '/var/cache/pkgshelf' '/var/cache/pkgshelf/aur'"));
-        assert!(s.contains("Server = file:///var/lib/pkgshelf/repo"));
+        assert!(s.contains("grep -q '^\\[pkgshelf\\]' /etc/pacman.conf"));
+        assert!(s.contains("Server = file://%s"));
+        assert!(s.contains(">> /etc/pacman.conf"));
     }
 }

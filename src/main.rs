@@ -28,8 +28,12 @@ usage:
   pkgshelf list                       show tracked entries
   pkgshelf check [--quiet]            installed / built / latest versions; exit 100 if updates pending
   pkgshelf diff <name>                PKGBUILD changes of an AUR package since you last reviewed it
-  pkgshelf update [name...] [--yes] [--force]
-                                      build outdated packages into the local repo
+  pkgshelf update [name...] [--yes] [--force] [--devel]
+                                      build outdated packages into the local repo (--devel also
+                                      rebuilds -git/-svn/-hg/-bzr packages); missing AUR dependencies
+                                      and PGP keys are offered automatically
+  pkgshelf rollback <name>            put the previous built version back in the repo and hold it
+                                      (then: sudo pacman -Syuu)
   pkgshelf hold <name> | unhold <name>
   pkgshelf doctor                     check tools, shared dirs, pacman.conf, untracked foreign packages
   pkgshelf migrate                    copy per-user data from before 0.2.0 into the shared location
@@ -63,10 +67,14 @@ enum Cmd {
         names: Vec<String>,
         yes: bool,
         force: bool,
+        devel: bool,
     },
     Hold {
         name: String,
         on: bool,
+    },
+    Rollback {
+        name: String,
     },
     Doctor,
     Migrate,
@@ -125,11 +133,13 @@ fn parse_args(args: &[String]) -> Result<Cmd, String> {
             quiet: flag("--quiet"),
         }),
         "diff" => allowed(&[]).and_then(|_| Ok(Cmd::Diff { name: one("name")? })),
-        "update" => allowed(&["--yes", "--force"]).map(|_| Cmd::Update {
+        "update" => allowed(&["--yes", "--force", "--devel"]).map(|_| Cmd::Update {
             names,
             yes: flag("--yes"),
             force: flag("--force"),
+            devel: flag("--devel"),
         }),
+        "rollback" => allowed(&[]).and_then(|_| Ok(Cmd::Rollback { name: one("name")? })),
         "hold" | "unhold" => allowed(&[]).and_then(|_| {
             Ok(Cmd::Hold {
                 name: one("name")?,
@@ -183,6 +193,7 @@ struct Row {
     base: String,
     latest: Option<String>,
     flagged: bool,
+    orphan: bool,
     dir: Option<PathBuf>,
     note: Option<String>,
 }
@@ -215,6 +226,7 @@ fn resolve_rows(es: &[Entry]) -> Result<Vec<Row>, String> {
                         .unwrap_or_else(|| e.target.clone()),
                     latest: i.map(|i| i.version.clone()),
                     flagged: i.is_some_and(|i| i.flagged),
+                    orphan: i.is_some_and(|i| i.orphan),
                     dir: None,
                     note: i.is_none().then(|| "not found on AUR".to_string()),
                 }
@@ -232,6 +244,7 @@ fn resolve_rows(es: &[Entry]) -> Result<Vec<Row>, String> {
                         base: String::new(),
                         latest: Some(s.version),
                         flagged: false,
+                        orphan: false,
                         dir: Some(dir),
                         note: None,
                     },
@@ -245,6 +258,7 @@ fn resolve_rows(es: &[Entry]) -> Result<Vec<Row>, String> {
                         base: String::new(),
                         latest: None,
                         flagged: false,
+                        orphan: false,
                         dir: None,
                         note: Some(msg),
                     },
@@ -454,6 +468,9 @@ fn check(c: &Ctx, quiet: bool) -> Result<bool, String> {
             if r.flagged {
                 st += " [flagged out-of-date on AUR]";
             }
+            if r.orphan {
+                st += " [orphaned on AUR: no maintainer]";
+            }
             if let Some(n) = &r.note {
                 st += &format!(" ({n})");
             }
@@ -630,12 +647,103 @@ fn build_into_repo(c: &Ctx, dir: &Path, names: &[String]) -> Result<(), String> 
     }
     util::run(
         util::grp("repo-add")
-            .arg("-R")
             .arg(c.d.repo.join(format!("{REPO}.db.tar.zst")))
             .args(files),
     )?;
+    pkg::prune_repo(&c.d.repo, 2);
     shared::share_repo(&c.d.repo);
     Ok(())
+}
+
+/// Offer to import PGP keys named in `validpgpkeys` that gpg does not know yet.
+fn ensure_pgp_keys(dir: &Path, yes: bool) -> Result<(), String> {
+    for key in pkg::srcinfo_values(dir, &["validpgpkeys"])? {
+        let known = Command::new("gpg")
+            .args(["--batch", "--list-keys", &key])
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .status()
+            .is_ok_and(|s| s.success());
+        if !known
+            && util::confirm(
+                &format!(
+                    "PGP key {key} is required to verify sources; import it from a keyserver?"
+                ),
+                yes,
+            )
+        {
+            util::run(Command::new("gpg").args(["--recv-keys", &key]))?;
+        }
+    }
+    Ok(())
+}
+
+fn resolvable(dep: &str) -> bool {
+    Command::new("pacman")
+        .args(["-Sp", dep])
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status()
+        .is_ok_and(|s| s.success())
+}
+
+/// Dependencies that neither pacman nor the installed system satisfies but the AUR has.
+fn missing_aur_deps(dir: &Path) -> Result<Vec<String>, String> {
+    let deps = pkg::srcinfo_values(dir, &["depends", "makedepends", "checkdepends"])?;
+    if deps.is_empty() {
+        return Ok(Vec::new());
+    }
+    // `pacman -T` prints the unsatisfied ones (exit 127), so its output is wanted either way
+    let unsat = Command::new("pacman")
+        .arg("-T")
+        .args(&deps)
+        .output()
+        .map_err(|e| format!("cannot run pacman: {e}"))?;
+    let missing: Vec<String> = String::from_utf8_lossy(&unsat.stdout)
+        .lines()
+        .map(|d| pkg::dep_name(d).to_string())
+        .filter(|d| !d.is_empty() && !resolvable(d))
+        .collect();
+    if missing.is_empty() {
+        return Ok(missing);
+    }
+    let on_aur: HashSet<String> = aur::info(&missing)?.into_iter().map(|i| i.name).collect();
+    Ok(missing.into_iter().filter(|d| on_aur.contains(d)).collect())
+}
+
+/// Track, build and install AUR dependencies before the package that needs them.
+fn ensure_aur_deps(dir: &Path, yes: bool) -> Result<(), String> {
+    use std::sync::atomic::{AtomicUsize, Ordering::Relaxed};
+    static DEPTH: AtomicUsize = AtomicUsize::new(0);
+    let missing = missing_aur_deps(dir)?;
+    if missing.is_empty() {
+        return Ok(());
+    }
+    if DEPTH.load(Relaxed) >= 5 {
+        return Err(format!(
+            "AUR dependencies nest too deeply: {}",
+            missing.join(", ")
+        ));
+    }
+    println!(
+        "missing dependencies found on the AUR: {}",
+        missing.join(", ")
+    );
+    if !util::confirm("track, build and install them first?", yes) {
+        return Err("declined".into());
+    }
+    DEPTH.fetch_add(1, Relaxed);
+    let mut c = Ctx::new()?;
+    let res = add(&mut c, Kind::Aur, missing.clone())
+        .and_then(|_| update(&Ctx::new()?, &missing, yes, false, false))
+        .and_then(|ok| {
+            ok.then_some(())
+                .ok_or_else(|| "building the dependencies failed".to_string())
+        });
+    DEPTH.fetch_sub(1, Relaxed);
+    res
 }
 
 fn build_aur(c: &Ctx, r: &Row, yes: bool) -> Result<(), String> {
@@ -650,13 +758,19 @@ fn build_aur(c: &Ctx, r: &Row, yes: bool) -> Result<(), String> {
             return Err("declined".into());
         }
     }
-    build_into_repo(c, &dir, &r.names).inspect_err(|_| {
-        eprintln!("hint: if a dependency is missing from the repos, it may be on the AUR: pkgshelf add aur <dep>, then update again");
-    })?;
+    ensure_pgp_keys(&dir, yes)?;
+    ensure_aur_deps(&dir, yes)?;
+    build_into_repo(c, &dir, &r.names)?;
     store::set_reviewed(&c.d, &r.name, &head)
 }
 
-fn update(c: &Ctx, names: &[String], yes: bool, force: bool) -> Result<bool, String> {
+fn is_vcs(name: &str) -> bool {
+    ["-git", "-svn", "-hg", "-bzr"]
+        .iter()
+        .any(|s| name.ends_with(s))
+}
+
+fn update(c: &Ctx, names: &[String], yes: bool, force: bool, devel: bool) -> Result<bool, String> {
     let rows = resolve_rows(&c.entries)?;
     let sts = c.statuses(&rows);
     let mut targets: Vec<&Row> = Vec::new();
@@ -664,7 +778,10 @@ fn update(c: &Ctx, names: &[String], yes: bool, force: bool) -> Result<bool, Str
         targets.extend(
             rows.iter()
                 .zip(&sts)
-                .filter(|(_, s)| matches!(s, Status::Build | Status::Update))
+                .filter(|(r, s)| {
+                    matches!(s, Status::Build | Status::Update)
+                        || (devel && is_vcs(&r.name) && **s != Status::Hold)
+                })
                 .map(|(r, _)| r),
         );
     } else {
@@ -707,6 +824,10 @@ fn update(c: &Ctx, names: &[String], yes: bool, force: bool) -> Result<bool, Str
             Err(e) => {
                 eprintln!("{}: {e}", r.name);
                 failed.push(r.name.clone());
+                if e.contains("ermission denied") {
+                    eprintln!("stopping: the same permission problem would hit every package");
+                    break;
+                }
             }
         }
     }
@@ -758,6 +879,31 @@ fn hold(c: &mut Ctx, name: &str, on: bool) -> Result<(), String> {
             "released"
         }
     );
+    Ok(())
+}
+
+fn rollback(c: &mut Ctx, name: &str) -> Result<(), String> {
+    let i = c.find(name)?;
+    let pkgname = match c.entries[i].kind {
+        Kind::Aur => c.entries[i].target.clone(),
+        Kind::Local => name.to_string(),
+    };
+    let versions = pkg::versions_of(&c.d.repo, &pkgname);
+    let (ver, file) = versions.get(1).ok_or_else(|| {
+        format!("no older build of {pkgname} in the repo (only the newest 2 are kept)")
+    })?;
+    util::run(
+        util::grp("repo-add")
+            .arg(c.d.repo.join(format!("{REPO}.db.tar.zst")))
+            .arg(file),
+    )?;
+    shared::share_repo(&c.d.repo);
+    c.entries[i].hold = true;
+    store::save(&c.d, &c.entries)?;
+    println!(
+        "{pkgname}: repo now offers {ver} and the package is held; downgrade with: sudo pacman -Syuu"
+    );
+    println!("release with `pkgshelf unhold {name}` to follow the latest again");
     Ok(())
 }
 
@@ -880,7 +1026,11 @@ fn run(cmd: Cmd) -> Result<ExitCode, String> {
     };
     if matches!(
         cmd,
-        Cmd::Add { .. } | Cmd::Rm { .. } | Cmd::Update { .. } | Cmd::Hold { .. }
+        Cmd::Add { .. }
+            | Cmd::Rm { .. }
+            | Cmd::Update { .. }
+            | Cmd::Hold { .. }
+            | Cmd::Rollback { .. }
     ) {
         reexec_with_group()?;
     }
@@ -898,9 +1048,15 @@ fn run(cmd: Cmd) -> Result<ExitCode, String> {
             });
         }
         Cmd::Diff { name } => diff(&Ctx::new()?, &name)?,
-        Cmd::Update { names, yes, force } => {
-            return done(update(&Ctx::new()?, &names, yes, force)?);
+        Cmd::Update {
+            names,
+            yes,
+            force,
+            devel,
+        } => {
+            return done(update(&Ctx::new()?, &names, yes, force, devel)?);
         }
+        Cmd::Rollback { name } => rollback(&mut Ctx::new()?, &name)?,
         Cmd::Hold { name, on } => hold(&mut Ctx::new()?, &name, on)?,
         Cmd::Doctor => return done(doctor(&Ctx::new()?)?),
         Cmd::Setup => print!("{}", shared::setup_script(&store::dirs()?)),
@@ -933,6 +1089,11 @@ mod tests {
 
     fn a(v: &[&str]) -> Result<Cmd, String> {
         parse_args(&v.iter().map(|s| s.to_string()).collect::<Vec<_>>())
+    }
+
+    #[test]
+    fn vcs_names() {
+        assert!(is_vcs("foo-git") && !is_vcs("foo-bin") && !is_vcs("gitui"));
     }
 
     #[test]
@@ -969,7 +1130,8 @@ mod tests {
             Ok(Cmd::Update {
                 names: vec!["a".into()],
                 yes: true,
-                force: false
+                force: false,
+                devel: false
             })
         );
         assert_eq!(a(&["check", "--quiet"]), Ok(Cmd::Check { quiet: true }));

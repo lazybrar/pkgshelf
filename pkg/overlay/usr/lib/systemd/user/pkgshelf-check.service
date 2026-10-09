@@ -1,0 +1,6 @@
+[Unit]
+Description=Check tracked AUR/local packages for updates
+
+[Service]
+Type=oneshot
+ExecStart=/bin/sh -c 'pkgshelf check --quiet; [ $? -eq 100 ] && notify-send -a pkgshelf pkgshelf "Package updates pending: run pkgshelf update"; true'

@@ -1,0 +1,16 @@
+_pkgshelf() {
+    local cur=${COMP_WORDS[COMP_CWORD]} cmd=${COMP_WORDS[1]}
+    local cmds="add rm list check diff update hold unhold rollback doctor migrate setup help"
+    if [ "$COMP_CWORD" -eq 1 ]; then
+        COMPREPLY=($(compgen -W "$cmds" -- "$cur"))
+        return
+    fi
+    case $cmd in
+        add) [ "$COMP_CWORD" -eq 2 ] && COMPREPLY=($(compgen -W "aur local" -- "$cur")) ;;
+        update) COMPREPLY=($(compgen -W "--yes --force --devel $(pkgshelf list 2>/dev/null | awk '{n=$2; sub(".*/","",n); print n}')" -- "$cur")) ;;
+        rm) COMPREPLY=($(compgen -W "--purge $(pkgshelf list 2>/dev/null | awk '{n=$2; sub(".*/","",n); print n}')" -- "$cur")) ;;
+        check) COMPREPLY=($(compgen -W "--quiet" -- "$cur")) ;;
+        diff|hold|unhold|rollback) COMPREPLY=($(compgen -W "$(pkgshelf list 2>/dev/null | awk '{n=$2; sub(".*/","",n); print n}')" -- "$cur")) ;;
+    esac
+}
+complete -F _pkgshelf pkgshelf
