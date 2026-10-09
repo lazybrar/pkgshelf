@@ -682,7 +682,7 @@ fn update(c: &Ctx, names: &[String], yes: bool, force: bool) -> Result<bool, Str
         println!("nothing to build");
         return Ok(true);
     }
-    let (mut built, mut failed) = (0, Vec::new());
+    let (mut built, mut failed, mut installable) = (0, Vec::new(), Vec::<String>::new());
     for r in targets {
         let Some(latest) = &r.latest else {
             eprintln!(
@@ -700,7 +700,10 @@ fn update(c: &Ctx, names: &[String], yes: bool, force: bool) -> Result<bool, Str
             (Kind::Local, None) => Err("no PKGBUILD".into()),
         };
         match res {
-            Ok(()) => built += 1,
+            Ok(()) => {
+                built += 1;
+                installable.extend(r.names.iter().cloned());
+            }
             Err(e) => {
                 eprintln!("{}: {e}", r.name);
                 failed.push(r.name.clone());
@@ -716,7 +719,14 @@ fn update(c: &Ctx, names: &[String], yes: bool, force: bool) -> Result<bool, Str
         }
     );
     if built > 0 {
-        println!("install with: sudo pacman -Syu");
+        let mut cmd = vec!["-Syu".to_string(), "--needed".into()];
+        cmd.extend(installable);
+        let line = format!("sudo pacman {}", cmd.join(" "));
+        if util::confirm(&format!("install now with `{line}`?"), false) {
+            util::run(Command::new("sudo").arg("pacman").args(&cmd))?;
+        } else {
+            println!("install later with: {line}");
+        }
     }
     Ok(failed.is_empty())
 }
@@ -833,6 +843,33 @@ fn doctor(c: &Ctx) -> Result<bool, String> {
     Ok(ok)
 }
 
+/// Not in the shared group? Re-run ourselves through `sudo -g pkgshelf` (still your own user, so
+/// makepkg works) instead of failing with permission errors.
+fn reexec_with_group() -> Result<(), String> {
+    use std::os::unix::process::CommandExt;
+    let Ok(d) = store::dirs() else { return Ok(()) };
+    if std::env::var_os("PKGSHELF_REEXEC").is_some()
+        || !d.root.exists()
+        || shared::can_write(&d.root)
+    {
+        return Ok(());
+    }
+    eprintln!(
+        "pkgshelf: needs the `{}` group, re-running with sudo",
+        store::GROUP
+    );
+    let exe = std::env::current_exe().map_err(|e| e.to_string())?;
+    let mut c = Command::new("sudo");
+    c.args(["-g", store::GROUP, "env", "PKGSHELF_REEXEC=1"]);
+    for k in ["PKGSHELF_ROOT", "PKGSHELF_CACHE"] {
+        if let Ok(v) = std::env::var(k) {
+            c.arg(format!("{k}={v}"));
+        }
+    }
+    c.arg(exe).args(std::env::args_os().skip(1));
+    Err(format!("cannot run sudo: {}", c.exec()))
+}
+
 fn run(cmd: Cmd) -> Result<ExitCode, String> {
     let done = |ok: bool| {
         Ok(if ok {
@@ -841,6 +878,12 @@ fn run(cmd: Cmd) -> Result<ExitCode, String> {
             ExitCode::from(1)
         })
     };
+    if matches!(
+        cmd,
+        Cmd::Add { .. } | Cmd::Rm { .. } | Cmd::Update { .. } | Cmd::Hold { .. }
+    ) {
+        reexec_with_group()?;
+    }
     match cmd {
         Cmd::Help => println!("{USAGE}"),
         Cmd::Version => println!("pkgshelf {VERSION}"),
