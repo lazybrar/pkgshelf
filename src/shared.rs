@@ -6,7 +6,7 @@ use std::fs;
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 
-fn can_write(dir: &Path) -> bool {
+pub fn can_write(dir: &Path) -> bool {
     let probe = dir.join(".pkgshelf-write-test");
     let ok = fs::File::create(&probe).is_ok();
     let _ = fs::remove_file(probe);
@@ -240,7 +240,10 @@ pub fn setup_script(d: &Dirs) -> String {
         "#!/bin/sh\n# pkgshelf setup: run as root (pkgshelf setup | sudo sh)\nset -e\n\
          getent group {GROUP} >/dev/null || groupadd --system {GROUP}\n\
          install -d -m 2775 -o root -g {GROUP} {}\n\
-         # then: usermod -aG {GROUP} <you>   (log in again), and add to /etc/pacman.conf:\n\
+         if [ -n \"${{SUDO_USER:-}}\" ] && [ \"$SUDO_USER\" != root ]; then\n\
+         \x20 usermod -aG {GROUP} \"$SUDO_USER\"; echo \"added $SUDO_USER to {GROUP}: log in again (or: sg {GROUP} -c 'pkgshelf ...')\"\n\
+         fi\n\
+         # other users: usermod -aG {GROUP} <user>. Add to /etc/pacman.conf:\n\
          #   [{REPO}]\n#   SigLevel = Optional TrustAll\n#   Server = file://{}\n",
         list.join(" "),
         d.repo.display()

@@ -490,6 +490,18 @@ fn git(dir: &Path) -> Command {
 
 fn sync_clone(c: &Ctx, base: &str) -> Result<PathBuf, String> {
     let dir = c.d.cache.join(base);
+    let probe = if dir.join(".git").exists() {
+        dir.join(".git")
+    } else {
+        c.d.cache.clone()
+    };
+    if probe.exists() && !shared::can_write(&probe) {
+        return Err(format!(
+            "cannot write to {} (permission denied): join the `{g}` group: `pkgshelf setup | sudo sh`, then log in again (or `sg {g} -c 'pkgshelf ...'`)",
+            probe.display(),
+            g = store::GROUP
+        ));
+    }
     if dir.join(".git").exists() {
         util::run(git(&dir).args(["pull", "--quiet", "--ff-only"]))?;
     } else {
