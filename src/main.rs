@@ -991,13 +991,56 @@ fn doctor(c: &Ctx) -> Result<bool, String> {
 
 /// Not in the shared group? Re-run ourselves through `sudo -g pkgshelf` (still your own user, so
 /// makepkg works) instead of failing with permission errors.
+fn drop_root(d: &Dirs) -> Result<(), String> {
+    use std::os::unix::process::CommandExt;
+    let Some(user) = std::env::var("SUDO_USER")
+        .ok()
+        .filter(|u| !u.is_empty() && u != "root")
+    else {
+        return Ok(());
+    };
+    let field = |db: &str, key: &str, i: usize| -> Result<String, String> {
+        util::out(Command::new("getent").args([db, key]))?
+            .trim()
+            .split(':')
+            .nth(i)
+            .map(str::to_owned)
+            .ok_or_else(|| format!("cannot look up {key}"))
+    };
+    let uid = field("passwd", &user, 2)?;
+    let gid = field("passwd", &user, 3)?;
+    let home = field("passwd", &user, 5)?;
+    let grp = field("group", store::GROUP, 2)?;
+    let exe = std::env::current_exe().map_err(|e| e.to_string())?;
+    let mut c = Command::new("setpriv");
+    c.args([
+        format!("--reuid={uid}"),
+        format!("--regid={gid}"),
+        format!("--groups={gid},{grp}"),
+    ]);
+    c.args(["env", "PKGSHELF_REEXEC=1"]);
+    c.arg(format!("HOME={home}")).arg(format!("USER={user}"));
+    c.arg(format!("PKGSHELF_ROOT={}", d.root.display()));
+    c.arg(format!("PKGSHELF_CACHE={}", d.cache.display()));
+    c.arg(exe).args(std::env::args_os().skip(1));
+    Err(format!("cannot run setpriv: {}", c.exec()))
+}
+
 fn reexec_with_group() -> Result<(), String> {
     use std::os::unix::process::CommandExt;
     let Ok(d) = store::dirs() else { return Ok(()) };
-    if std::env::var_os("PKGSHELF_REEXEC").is_some()
-        || !d.root.exists()
-        || shared::can_write(&d.root)
-    {
+    if std::env::var_os("PKGSHELF_REEXEC").is_some() || !d.root.exists() {
+        return Ok(());
+    }
+    // `sudo pkgshelf ...`: makepkg refuses to run as root, so continue as the invoking user,
+    // with the shared group added.
+    let is_root = fs::metadata("/proc/self")
+        .map(|m| std::os::unix::fs::MetadataExt::uid(&m) == 0)
+        .unwrap_or(false);
+    if is_root {
+        return drop_root(&d);
+    }
+    if shared::can_write(&d.root) {
         return Ok(());
     }
     let exe = std::env::current_exe().map_err(|e| e.to_string())?;
@@ -1025,10 +1068,26 @@ fn reexec_with_group() -> Result<(), String> {
         .status()
         .is_ok_and(|s| s.success());
     if !sudo_ok {
-        return Err(format!(
-            "you are not in the `{g}` group yet. Run this once: pkgshelf setup | sudo sh   (no new login needed)",
-            g = store::GROUP
-        ));
+        // sudo may not allow `-g`, but plain sudo works: run as root, which drops back to us
+        let plain_ok = Command::new("sudo")
+            .args(["-l", "/bin/true"])
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .status()
+            .is_ok_and(|s| s.success());
+        if !plain_ok {
+            return Err(format!(
+                "you are not in the `{g}` group yet. Run this once: pkgshelf setup | sudo sh   (no new login needed)",
+                g = store::GROUP
+            ));
+        }
+        eprintln!(
+            "pkgshelf: needs the `{}` group, re-running with sudo",
+            store::GROUP
+        );
+        let mut c = Command::new("sudo");
+        c.arg(exe).args(args);
+        return Err(format!("cannot run sudo: {}", c.exec()));
     }
     eprintln!(
         "pkgshelf: needs the `{}` group, re-running with sudo",
