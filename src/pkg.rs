@@ -67,10 +67,7 @@ fn values_of(srcinfo: &str, keys: &[&str]) -> Vec<String> {
 
 /// Package name part of a dependency string like `foo>=1.2` or `foo: why`.
 pub fn dep_name(d: &str) -> &str {
-    d.split(['<', '>', '=', ':'])
-        .next()
-        .unwrap_or(d)
-        .trim()
+    d.split(['<', '>', '=', ':']).next().unwrap_or(d).trim()
 }
 
 /// Built files of `name` in the repo, newest version first.

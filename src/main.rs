@@ -1000,6 +1000,18 @@ fn reexec_with_group() -> Result<(), String> {
     {
         return Ok(());
     }
+    let allowed = Command::new("sudo")
+        .args(["-l", "-g", store::GROUP, "/bin/true"])
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status()
+        .is_ok_and(|s| s.success());
+    if !allowed {
+        return Err(format!(
+            "you are not in the `{g}` group yet. Run this once: pkgshelf setup | sudo sh   (then log in again)",
+            g = store::GROUP
+        ));
+    }
     eprintln!(
         "pkgshelf: needs the `{}` group, re-running with sudo",
         store::GROUP
