@@ -843,6 +843,17 @@ fn update(c: &Ctx, names: &[String], yes: bool, force: bool, devel: bool) -> Res
         let mut cmd = vec!["-Syu".to_string(), "--needed".into()];
         cmd.extend(installable);
         let line = format!("sudo pacman {}", cmd.join(" "));
+        if !shared::repo_configured() {
+            println!(
+                "the [{REPO}] repo is not in /etc/pacman.conf yet, so pacman cannot see these packages"
+            );
+            if util::confirm("add it now with sudo?", false) {
+                shared::add_repo_to_conf(&c.d)?;
+            } else {
+                println!("later: pkgshelf setup | sudo sh   then: {line}");
+                return Ok(failed.is_empty());
+            }
+        }
         if util::confirm(&format!("install now with `{line}`?"), false) {
             util::run(Command::new("sudo").arg("pacman").args(&cmd))?;
         } else {

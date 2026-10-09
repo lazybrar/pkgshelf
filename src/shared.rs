@@ -124,6 +124,34 @@ pub fn check_pacman_conf(d: &Dirs) -> bool {
 
 /// makepkg and repo-add create 0644 files whatever the umask; make the repo group-writable so any
 /// `pkgshelf` member can replace them. Files owned by someone else fail the chmod and are skipped.
+/// Is the [pkgshelf] repo section present in /etc/pacman.conf?
+pub fn repo_configured() -> bool {
+    let conf = fs::read_to_string("/etc/pacman.conf").unwrap_or_default();
+    parse_server(&conf).is_some()
+}
+
+/// Append the repo section to /etc/pacman.conf through sudo (only called after the user agreed).
+pub fn add_repo_to_conf(d: &Dirs) -> Result<(), String> {
+    let block = format!(
+        "\n[{REPO}]\nSigLevel = Optional TrustAll\nServer = file://{}\n",
+        d.repo.display()
+    );
+    util::run(
+        std::process::Command::new("sudo")
+            .args(["sh", "-c", "cat >> /etc/pacman.conf"])
+            .stdin(write_stdin(&block)?),
+    )
+}
+
+fn write_stdin(text: &str) -> Result<std::process::Stdio, String> {
+    // a temp file keeps this simple and avoids juggling a child's stdin pipe
+    let f = std::env::temp_dir().join(format!("pkgshelf-conf-{}", std::process::id()));
+    fs::write(&f, text).map_err(|e| e.to_string())?;
+    let h = fs::File::open(&f).map_err(|e| e.to_string())?;
+    let _ = fs::remove_file(&f);
+    Ok(h.into())
+}
+
 pub fn share_repo(repo: &Path) {
     for e in fs::read_dir(repo).into_iter().flatten().flatten() {
         if e.metadata().is_ok_and(|m| m.is_file()) {
