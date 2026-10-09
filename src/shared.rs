@@ -48,7 +48,7 @@ pub fn check_dirs(d: &Dirs) -> bool {
         if !can_write(p) {
             ok = false;
             notes.push(format!(
-                "you cannot write here (join the `{GROUP}` group, then log in again)"
+                "you cannot write here (join the `{GROUP}` group: pkgshelf setup | sudo sh)"
             ));
         }
         let state = if notes.is_empty() {
@@ -72,7 +72,7 @@ pub fn check_dirs(d: &Dirs) -> bool {
         println!(
             "\nthe pkgshelf package creates these through sysusers.d/tmpfiles.d; by hand, as root:\n  \
              sudo groupadd -r {GROUP}\n  sudo install -d -m 2775 -o root -g {GROUP} {}\n  \
-             sudo usermod -aG {GROUP} <user>      # then log in again\n",
+             sudo usermod -aG {GROUP} <user>     \n",
             dirs.join(" ")
         );
     }
@@ -216,7 +216,7 @@ mod tests {
     }
 }
 
-fn shq(p: &Path) -> String {
+pub fn shq(p: &Path) -> String {
     format!("'{}'", p.to_string_lossy().replace('\'', "'\\''"))
 }
 
@@ -241,7 +241,7 @@ pub fn setup_script(d: &Dirs) -> String {
          getent group {GROUP} >/dev/null || groupadd --system {GROUP}\n\
          install -d -m 2775 -o root -g {GROUP} {}\n\
          if [ -n \"${{SUDO_USER:-}}\" ] && [ \"$SUDO_USER\" != root ]; then\n\
-         \x20 usermod -aG {GROUP} \"$SUDO_USER\"; echo \"added $SUDO_USER to {GROUP}: log in again (or: sg {GROUP} -c 'pkgshelf ...')\"\n\
+         \x20 usermod -aG {GROUP} \"$SUDO_USER\"; echo \"added $SUDO_USER to {GROUP}: no new login needed, pkgshelf picks the group up itself\"\n\
          fi\n\
          # other users: usermod -aG {GROUP} <user>\n\
          grep -q '^\\[{REPO}\\]' /etc/pacman.conf || {{\n\

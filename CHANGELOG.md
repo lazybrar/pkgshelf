@@ -6,6 +6,7 @@
 - missing AUR dependencies are tracked, built and installed first (asks); missing PGP keys from `validpgpkeys` are offered for import
 - `update --devel` rebuilds -git/-svn/-hg/-bzr packages; `check` flags orphaned AUR packages
 - `rollback <name>` restores the previous built version (the repo keeps the newest two) and holds the package
+- no re-login needed: members of the group are switched into it automatically (`sg`)
 - `setup` also adds the sudo user to the group and the `[pkgshelf]` repo to /etc/pacman.conf
 - packaged: daily `pkgshelf-check` user timer with a desktop notification (`systemctl --user enable --now pkgshelf-check.timer`), fish/bash/zsh completions
 

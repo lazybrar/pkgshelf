@@ -18,7 +18,7 @@ or as a pacman package (also installs the group and directory definitions): `git
 With the pacman package the group and directories exist already. After `cargo install`, create them once:
 
     pkgshelf setup | sudo sh     # prints a short root script (read it first): group `pkgshelf`, /var/lib/pkgshelf, /var/cache/pkgshelf
-    sudo usermod -aG pkgshelf <you>      # then log in again
+    sudo usermod -aG pkgshelf <you>     
     pkgshelf doctor              # checks tools, directories and /etc/pacman.conf; prints what is missing
 
 Add the block `doctor` prints to `/etc/pacman.conf` once (`Server = file:///var/lib/pkgshelf/repo`), then `sudo pacman -Sy`.

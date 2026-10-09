@@ -514,7 +514,7 @@ fn sync_clone(c: &Ctx, base: &str) -> Result<PathBuf, String> {
     };
     if probe.exists() && !shared::can_write(&probe) {
         return Err(format!(
-            "cannot write to {} (permission denied): join the `{g}` group: `pkgshelf setup | sudo sh`, then log in again (or `sg {g} -c 'pkgshelf ...'`)",
+            "cannot write to {} (permission denied): join the `{g}` group: `pkgshelf setup | sudo sh`",
             probe.display(),
             g = store::GROUP
         ));
@@ -1000,15 +1000,33 @@ fn reexec_with_group() -> Result<(), String> {
     {
         return Ok(());
     }
-    let allowed = Command::new("sudo")
+    let exe = std::env::current_exe().map_err(|e| e.to_string())?;
+    let args: Vec<std::ffi::OsString> = std::env::args_os().skip(1).collect();
+    // Already a member in /etc/group (just not in this login session): `sg` picks the group up
+    // right away, no new login and no password needed.
+    let user = std::env::var("USER").unwrap_or_default();
+    let member = util::out(Command::new("getent").args(["group", store::GROUP]))
+        .ok()
+        .and_then(|l| l.trim().rsplit(':').next().map(str::to_owned))
+        .is_some_and(|m| m.split(',').any(|u| u == user));
+    if member {
+        let mut line = String::from("PKGSHELF_REEXEC=1 exec");
+        for a in std::iter::once(exe.as_os_str()).chain(args.iter().map(|a| a.as_os_str())) {
+            line += &format!(" {}", shared::shq(Path::new(a)));
+        }
+        let mut c = Command::new("sg");
+        c.args([store::GROUP, "-c", &line]);
+        return Err(format!("cannot run sg: {}", c.exec()));
+    }
+    let sudo_ok = Command::new("sudo")
         .args(["-l", "-g", store::GROUP, "/bin/true"])
         .stdout(Stdio::null())
         .stderr(Stdio::null())
         .status()
         .is_ok_and(|s| s.success());
-    if !allowed {
+    if !sudo_ok {
         return Err(format!(
-            "you are not in the `{g}` group yet. Run this once: pkgshelf setup | sudo sh   (then log in again)",
+            "you are not in the `{g}` group yet. Run this once: pkgshelf setup | sudo sh   (no new login needed)",
             g = store::GROUP
         ));
     }
@@ -1016,7 +1034,6 @@ fn reexec_with_group() -> Result<(), String> {
         "pkgshelf: needs the `{}` group, re-running with sudo",
         store::GROUP
     );
-    let exe = std::env::current_exe().map_err(|e| e.to_string())?;
     let mut c = Command::new("sudo");
     c.args(["-g", store::GROUP, "env", "PKGSHELF_REEXEC=1"]);
     for k in ["PKGSHELF_ROOT", "PKGSHELF_CACHE"] {
@@ -1024,7 +1041,7 @@ fn reexec_with_group() -> Result<(), String> {
             c.arg(format!("{k}={v}"));
         }
     }
-    c.arg(exe).args(std::env::args_os().skip(1));
+    c.arg(exe).args(args);
     Err(format!("cannot run sudo: {}", c.exec()))
 }
 
